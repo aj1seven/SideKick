@@ -1,0 +1,12 @@
+gradio
+langchain
+langgraph
+langchain-openai
+langchain-community
+openai
+python-dotenv
+pydantic
+requests
+playwright
+typing-extensions
+EOL
