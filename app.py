@@ -1,50 +1,63 @@
-import gradio as gr
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from sidekick import Sidekick
 
+app = FastAPI()
 
-async def setup():
-    sidekick = Sidekick()
+# Allow React frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # tighten in prod
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+sidekick = Sidekick()
+
+@app.on_event("startup")
+async def startup():
     await sidekick.setup()
-    return sidekick
 
-async def process_message(sidekick, message, success_criteria, history):
-    results = await sidekick.run_superstep(message, success_criteria, history)
-    return results, sidekick
+
+class Message(BaseModel):
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    success_criteria: str
+    history: list[Message]
+
+
+class ChatResponse(BaseModel):
+    role: str
+    content: str
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(req: ChatRequest):
+    result = await sidekick.run_superstep(
+        message=req.message,
+        success_criteria=req.success_criteria,
+        history=[m.dict() for m in req.history],
+    )
+
+    # sidekick.run_superstep returns the full history list: [..., user, reply, feedback]
+    # We want to extract the assistant's reply and the evaluator's feedback.
+    # The last two items in the list are the reply and the feedback (both role='assistant').
     
-async def reset():
-    new_sidekick = Sidekick()
-    await new_sidekick.setup()
-    return "", "", None, new_sidekick
+    # Check if we have enough items
+    if len(result) >= 2:
+        assistant_reply = result[-2]["content"]
+        evaluator_feedback = result[-1]["content"]
+        combined_content = f"{assistant_reply}\n\n---\n*{evaluator_feedback}*"
+    else:
+        # Fallback if result structure is unexpected
+        combined_content = str(result)
 
-def free_resources(sidekick):
-    print("Cleaning up")
-    try:
-        if sidekick:
-            sidekick.free_resources()
-    except Exception as e:
-        print(f"Exception during cleanup: {e}")
-
-
-with gr.Blocks(title="Sidekick", theme=gr.themes.Default(primary_hue="emerald")) as ui:
-    gr.Markdown("## Sidekick Personal Co-Worker")
-    sidekick = gr.State(delete_callback=free_resources)
-    
-    with gr.Row():
-        chatbot = gr.Chatbot(label="Sidekick", height=300, type="messages")
-    with gr.Group():
-        with gr.Row():
-            message = gr.Textbox(show_label=False, placeholder="Your request to the Sidekick")
-        with gr.Row():
-            success_criteria = gr.Textbox(show_label=False, placeholder="What are your success critiera?")
-    with gr.Row():
-        reset_button = gr.Button("Reset", variant="stop")
-        go_button = gr.Button("Go!", variant="primary")
-        
-    ui.load(setup, [], [sidekick])
-    message.submit(process_message, [sidekick, message, success_criteria, chatbot], [chatbot, sidekick])
-    success_criteria.submit(process_message, [sidekick, message, success_criteria, chatbot], [chatbot, sidekick])
-    go_button.click(process_message, [sidekick, message, success_criteria, chatbot], [chatbot, sidekick])
-    reset_button.click(reset, [], [message, success_criteria, chatbot, sidekick])
-
-    
-ui.launch(inbrowser=True)
+    return {
+        "role": "assistant",
+        "content": combined_content,
+    }
